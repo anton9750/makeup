@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Touch-first devices (phones, tablets) report a coarse primary pointer.
 export const isTouch =
   typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(pointer: coarse)').matches

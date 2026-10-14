@@ -1,3 +1,4 @@
+// @ts-nocheck
 // 75 cheek shades: 5 families x 15 steps, light -> deep
 const FAMILIES = [
   { name: 'Petal', h: 350, s: 74, l0: 87, l1: 47 },

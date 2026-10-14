@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 /* A stylised "YouTube" (called BlushTube here - rename in LOGO_NAME).

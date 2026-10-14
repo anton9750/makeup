@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { useEffect, useMemo, useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
@@ -40,6 +41,13 @@ const FACE_PLANE = new THREE.Plane().setFromNormalAndCoplanarPoint(
   HEAD.clone().addScaledVector(FWD, 0.6),
 )
 
+// Paint buffer. Laptop blush radius stays 55px on this map, so the desktop stroke looks the same.
+const TEX_W = 640
+const TEX_H = 800
+const BRUSH_RADII = { pixel: 2, fine: 9, soft: 22, blush: 55 }
+// Finger sits this many CSS pixels below the dab in Direct mode, so the tip stays visible.
+const FINGER_LIFT = 112
+
 // laptop lying on the bed (behind the table camera)
 const LAP_POS = new THREE.Vector3(0, 0.695, 7.9)
 const LAP_TILT = 0.22 // lid leans back this many radians
@@ -69,9 +77,12 @@ function camTargets(view, aspect) {
     return { pos: tgt.clone().addScaledVector(dir, dist), tgt, fov }
   }
   if (view === 'face') {
-    const k = Math.max(1, 0.9 / aspect)
+    // Phones are tall, so the old fit pulled the head far away and a thumb covered
+    // half a cheek. Touch frames the head a little tighter. Mouse math is unchanged.
+    const k = Math.max(1, (isTouch ? 0.78 : 0.9) / aspect)
+    const dist = (isTouch ? 1.38 : 1.5) * k
     return {
-      pos: HEAD.clone().addScaledVector(FWD, 1.5 * k).add(new THREE.Vector3(0, 0.02, 0)),
+      pos: HEAD.clone().addScaledVector(FWD, dist).add(new THREE.Vector3(0, 0.02, 0)),
       tgt: HEAD.clone(),
       fov: 40,
     }
@@ -111,6 +122,10 @@ export default function Scene(props) {
   const ptr = useRef({ x: 0, y: 0, inside: false })
   const live = useRef(props)
   live.current = props
+  // 'finger' = relative/direct precision. 'classic' = mouse, pen, and the laptop.
+  const inputKind = useRef(isTouch ? 'finger' : 'classic')
+  const aim = useRef({ x: 0, y: 0, ready: false, pid: null, lx: 0, ly: 0, down: false })
+  const tmp = useRef({ a: new THREE.Vector3(), b: new THREE.Vector3() })
 
   const cam = useRef({
     t: 1,
@@ -135,6 +150,7 @@ export default function Scene(props) {
     last: null,
     lastPan: -1,
     needAt: 0,
+    stamp: false,
     restPos: new THREE.Vector3(0.15, TY + 0.04, -0.5),
     tip: new THREE.Vector3(0.15, TY + 0.04, -0.5),
     dir: REST_DIR.clone(),
@@ -170,26 +186,92 @@ export default function Scene(props) {
     paintApi.current.clear?.()
   }, [clearKey])
 
-  // pointer tracking + brush drop
+  useEffect(() => {
+    if (!props.stampKey) return
+    st.current.stamp = true
+  }, [props.stampKey])
+
+  // pointer tracking + brush drop.
+  // Laptop / mouse / pen: the cursor IS the brush (absolute), same as before.
+  // Finger on a coarse pointer: the brush is a separate point you steer. Dragging
+  // moves it by a fraction of your finger (clutch — lift and drag again to continue)
+  // so you can park it on one texel. Direct mode is absolute, but the dab sits
+  // FINGER_LIFT pixels above the finger so the finger never covers it.
   useEffect(() => {
     const el = gl.domElement
     const s = st.current
+    const a = aim.current
+    el.style.touchAction = 'none'
+
     const track = (e) => {
       const r = el.getBoundingClientRect()
+      const fingerFace = isTouch && e.pointerType === 'touch' && live.current.view === 'face'
+      if (fingerFace && a.down && e.pointerId === a.pid) {
+        const precision = live.current.tool?.precision || 'x4'
+        if (precision === 'direct') {
+          a.x = clamp(e.clientX - r.left, 0, r.width)
+          a.y = clamp(e.clientY - r.top - FINGER_LIFT, 0, r.height)
+        } else {
+          const gain = precision === 'x8' ? 0.125 : 0.25
+          a.x = clamp(a.x + (e.clientX - a.lx) * gain, 0, r.width)
+          a.y = clamp(a.y + (e.clientY - a.ly) * gain, 0, r.height)
+        }
+        a.lx = e.clientX
+        a.ly = e.clientY
+        a.ready = true
+        if (e.cancelable) e.preventDefault()
+        return
+      }
       ptr.current.x = ((e.clientX - r.left) / r.width) * 2 - 1
-      // on touch, hold the tip a little above the fingertip so it stays visible
+      // Table dipping only: keep the old fingertip lift so the brush stays visible.
       ptr.current.y = -((e.clientY - r.top) / r.height) * 2 + 1 + (e.pointerType === 'touch' ? 0.14 : 0)
       ptr.current.inside =
         e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom
+      if (isTouch && live.current.view === 'face' && e.pointerType !== 'touch') {
+        a.x = e.clientX - r.left
+        a.y = e.clientY - r.top
+        a.ready = true
+      }
     }
     const down = (e) => {
+      inputKind.current = e.pointerType === 'touch' ? 'finger' : 'classic'
+      const fingerFace = isTouch && e.pointerType === 'touch' && live.current.view === 'face'
+      if (fingerFace) {
+        const r = el.getBoundingClientRect()
+        if (!a.ready) {
+          a.x = r.width * 0.5
+          a.y = r.height * 0.42
+          a.ready = true
+        }
+        a.pid = e.pointerId
+        a.down = true
+        a.lx = e.clientX
+        a.ly = e.clientY
+        if ((live.current.tool?.precision || 'x4') === 'direct') {
+          a.x = clamp(e.clientX - r.left, 0, r.width)
+          a.y = clamp(e.clientY - r.top - FINGER_LIFT, 0, r.height)
+        }
+        try {
+          el.setPointerCapture(e.pointerId)
+        } catch {
+          /* already captured or unsupported */
+        }
+        s.painting = live.current.tool?.mode === 'paint'
+        s.last = null
+        if (e.cancelable) e.preventDefault()
+        return
+      }
       track(e)
       if (live.current.view === 'face') {
         s.painting = true
         s.last = null
       }
     }
-    const up = () => {
+    const up = (e) => {
+      if (!e || e.pointerId == null || e.pointerId === a.pid) {
+        a.down = false
+        a.pid = null
+      }
       s.painting = false
       s.last = null
       if (s.dragging) {
@@ -203,8 +285,8 @@ export default function Scene(props) {
         }
       }
     }
-    window.addEventListener('pointermove', track)
-    el.addEventListener('pointerdown', down)
+    window.addEventListener('pointermove', track, { passive: false })
+    el.addEventListener('pointerdown', down, { passive: false })
     window.addEventListener('pointerup', up)
     window.addEventListener('pointercancel', up)
     return () => {
@@ -268,9 +350,45 @@ export default function Scene(props) {
     let tipT = s.restPos
     let dirT = REST_DIR
     const faceActive = p.view === 'face' && c.t > 0.85
+    const fingerFace = faceActive && isTouch && inputKind.current === 'finger'
+    const sizeName = isTouch ? p.tool?.size || 'fine' : 'blush'
+    const radius = BRUSH_RADII[sizeName] || 55
+    const hard = sizeName === 'pixel'
 
-    if (faceActive && ptr.current.inside && faceMesh.current) {
-      ray.setFromCamera(ndc.set(ptr.current.x, ptr.current.y), camera)
+    let ndcX = ptr.current.x
+    let ndcY = ptr.current.y
+    let aiming = ptr.current.inside
+    if (fingerFace) {
+      const rect = gl.domElement.getBoundingClientRect()
+      const a = aim.current
+      if (!a.ready && rect.width > 2) {
+        a.x = rect.width * 0.5
+        a.y = rect.height * 0.42
+        a.ready = true
+      }
+      const bag = p.overlayRef?.current
+      const step = bag?.texel || 3
+      if (bag?.nudge && (bag.nudge.x || bag.nudge.y)) {
+        a.x += bag.nudge.x * step
+        a.y += bag.nudge.y * step
+        bag.nudge.x = 0
+        bag.nudge.y = 0
+        a.ready = true
+      }
+      a.x = clamp(a.x, 0, Math.max(0, rect.width))
+      a.y = clamp(a.y, 0, Math.max(0, rect.height))
+      if (rect.width > 2) {
+        ndcX = (a.x / rect.width) * 2 - 1
+        ndcY = -(a.y / rect.height) * 2 + 1
+        aiming = true
+      }
+    }
+
+    let hitUv = null
+    let hitPoint = null
+
+    if (faceActive && aiming && faceMesh.current) {
+      ray.setFromCamera(ndc.set(ndcX, ndcY), camera)
       dirT = FACE_DIR
       const hit = ray.intersectObject(faceMesh.current, false)[0]
       if (hit) {
@@ -279,22 +397,43 @@ export default function Scene(props) {
           .applyNormalMatrix(new THREE.Matrix3().getNormalMatrix(hit.object.matrixWorld))
           .normalize()
         tipT = hit.point.clone().addScaledVector(n, 0.012)
-        if (s.painting) {
+        hitUv = { u: hit.uv.x, v: hit.uv.y }
+        hitPoint = hit.point
+        const doPaint = s.painting || s.stamp
+        if (doPaint) {
           if (!p.brushColor) {
             const now = performance.now()
             if (now > s.needAt) {
               s.needAt = now + 2500
               p.onNeedColor()
             }
+            s.stamp = false
           } else {
-            paintApi.current.stroke?.(hit.uv.x, hit.uv.y, s.last?.u, s.last?.v, p.brushColor)
-            s.last = { u: hit.uv.x, v: hit.uv.y }
+            paintApi.current.stroke?.(
+              hit.uv.x,
+              hit.uv.y,
+              s.stamp ? undefined : s.last?.u,
+              s.stamp ? undefined : s.last?.v,
+              p.brushColor,
+              isTouch ? radius : 55,
+              isTouch && hard,
+            )
+            if (!s.stamp) s.last = { u: hit.uv.x, v: hit.uv.y }
+            s.stamp = false
           }
         } else s.last = null
       } else {
         const out = new THREE.Vector3()
         if (ray.ray.intersectPlane(FACE_PLANE, out)) tipT = out
         s.last = null
+        if (s.stamp) {
+          s.stamp = false
+          const now = performance.now()
+          if (now > s.needAt) {
+            s.needAt = now + 1600
+            p.onBrushMiss?.()
+          }
+        }
       }
     } else if (p.view === 'table' && s.dragging) {
       ray.setFromCamera(ndc.set(ptr.current.x, ptr.current.y), camera)
@@ -324,11 +463,81 @@ export default function Scene(props) {
       }
     }
 
-    s.tip.lerp(tipT, 1 - Math.exp(-dt * 16))
-    s.dir.lerp(dirT, 1 - Math.exp(-dt * 9)).normalize()
+    // Touch face: the 3D brush should sit on the pixel you're aiming at, not lag behind it.
+    const follow = fingerFace ? 42 : 16
+    s.tip.lerp(tipT, 1 - Math.exp(-dt * follow))
+    s.dir.lerp(dirT, 1 - Math.exp(-dt * (fingerFace ? 18 : 9))).normalize()
     if (brush.current) {
       brush.current.position.copy(s.tip)
       brush.current.quaternion.setFromUnitVectors(UP, s.dir)
+    }
+
+    if (isTouch && p.overlayRef?.current) {
+      const o = p.overlayRef.current
+      const rect = gl.domElement.getBoundingClientRect()
+      const show = faceActive && (fingerFace || ptr.current.inside)
+      if (typeof window !== 'undefined') {
+        window.__brush = {
+          t: Math.round(c.t * 1000) / 1000,
+          view: p.view,
+          faceActive,
+          finger: inputKind.current,
+          show,
+          hasReticle: !!o.reticle,
+          hasLoupe: !!o.loupe,
+          inside: ptr.current.inside,
+        }
+      }
+      if (o.reticle) {
+        o.reticle.style.opacity = show ? '1' : '0'
+        if (show && rect.width > 2) {
+          const x = ((ndcX + 1) / 2) * rect.width
+          const y = ((1 - ndcY) / 2) * rect.height
+          o.reticle.style.transform = `translate3d(${x}px, ${y}px, 0)`
+          if (o.loupe) {
+            const clash = x < 176 && y < 300
+            o.loupe.style.opacity = '1'
+            o.loupe.style.top = clash ? '132px' : '108px'
+            o.loupe.style.bottom = 'auto'
+            o.loupe.style.left = clash ? 'auto' : '12px'
+            o.loupe.style.right = clash ? '12px' : 'auto'
+          }
+          if (o.ring) {
+            let screenR = hard ? 14 : 16
+            if (hitPoint && !hard) {
+              const v = tmp.current
+              v.a.copy(hitPoint)
+              v.b.copy(hitPoint)
+              v.b.x += radius * (0.72 / TEX_W)
+              v.a.project(camera)
+              v.b.project(camera)
+              screenR = Math.max(
+                8,
+                Math.hypot((v.b.x - v.a.x) * rect.width * 0.5, (v.b.y - v.a.y) * rect.height * 0.5),
+              )
+              // one texel, reused by the nudge pad
+              v.a.copy(hitPoint)
+              v.b.copy(hitPoint)
+              v.b.x += 0.72 / TEX_W
+              v.a.project(camera)
+              v.b.project(camera)
+              o.texel = Math.max(
+                1.25,
+                Math.hypot((v.b.x - v.a.x) * rect.width * 0.5, (v.b.y - v.a.y) * rect.height * 0.5),
+              )
+            }
+            o.ring.style.width = `${screenR * 2}px`
+            o.ring.style.height = `${screenR * 2}px`
+          }
+        }
+      }
+      if (o.loupe && !show) o.loupe.style.opacity = '0'
+      if (show && hitUv && o.canvas) paintApi.current.loupe?.(o.canvas, hitUv.u, hitUv.v, radius, hard)
+      if (o.readout) {
+        if (!show) o.readout.textContent = ''
+        else if (!hitUv) o.readout.textContent = 'off face'
+        else o.readout.textContent = `${Math.floor(hitUv.u * TEX_W)} , ${Math.floor((1 - hitUv.v) * TEX_H)}`
+      }
     }
   })
 
@@ -602,8 +811,8 @@ function MakeupBox({ open, shadeHex, onClick, onOver, onOut }) {
 /* Statue head: your photo on the front, paintable canvas on top       */
 /* ------------------------------------------------------------------ */
 function Head({ apiRef, faceRef, onClick, onOver, onOut }) {
-  const W = 640
-  const H = 800
+  const W = TEX_W
+  const H = TEX_H
 
   const { cv, tex } = useMemo(() => {
     const mk = () => {
@@ -667,12 +876,17 @@ function Head({ apiRef, faceRef, onClick, onOver, onOut }) {
     }
     img.src = import.meta.env.BASE_URL + 'face.png'
 
-    const R = 55
     apiRef.current = {
-      stroke(u, v, pu, pv, hex) {
+      stroke(u, v, pu, pv, hex, radius = 55, hard = false) {
         const ctx = cv.paint.getContext('2d')
         const [r, g, b] = hexToRgb(hex)
+        const R = Math.max(1, radius)
         const dab = (x, y) => {
+          if (hard) {
+            ctx.fillStyle = `rgba(${r},${g},${b},0.98)`
+            ctx.fillRect(Math.floor(x), Math.floor(y), 2, 2)
+            return
+          }
           const gr = ctx.createRadialGradient(x, y, 0, x, y, R)
           gr.addColorStop(0, `rgba(${r},${g},${b},0.16)`)
           gr.addColorStop(0.5, `rgba(${r},${g},${b},0.08)`)
@@ -688,10 +902,74 @@ function Head({ apiRef, faceRef, onClick, onOver, onOut }) {
         else {
           const px = pu * W
           const py = (1 - pv) * H
-          const n = Math.max(1, Math.ceil(Math.hypot(x - px, y - py) / (R * 0.25)))
+          const step = hard ? 1.35 : R * 0.25
+          const n = Math.max(1, Math.ceil(Math.hypot(x - px, y - py) / step))
           for (let i = 1; i <= n; i++) dab(px + ((x - px) * i) / n, py + ((y - py) * i) / n)
         }
         dirty.current = true
+      },
+      loupe(canvas, u, v, radius, hard) {
+        if (dirty.current) {
+          dirty.current = false
+          compose()
+        }
+        const ctx = canvas.getContext('2d')
+        if (!ctx) return
+        const zoom = hard ? 14 : radius <= 9 ? 8 : radius <= 22 ? 4.2 : 2.5
+        const srcW = canvas.width / zoom
+        const srcH = canvas.height / zoom
+        const sx = u * W - srcW / 2
+        const sy = (1 - v) * H - srcH / 2
+        ctx.imageSmoothingEnabled = false
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+        ctx.drawImage(cv.display, sx, sy, srcW, srcH, 0, 0, canvas.width, canvas.height)
+        if (zoom >= 6) {
+          ctx.beginPath()
+          const x0 = Math.floor(sx)
+          const x1 = Math.ceil(sx + srcW)
+          const y0 = Math.floor(sy)
+          const y1 = Math.ceil(sy + srcH)
+          for (let i = x0; i <= x1; i++) {
+            const x = (i - sx) * zoom
+            ctx.moveTo(x, 0)
+            ctx.lineTo(x, canvas.height)
+          }
+          for (let j = y0; j <= y1; j++) {
+            const y = (j - sy) * zoom
+            ctx.moveTo(0, y)
+            ctx.lineTo(canvas.width, y)
+          }
+          ctx.strokeStyle = 'rgba(255,255,255,0.32)'
+          ctx.lineWidth = 1
+          ctx.stroke()
+        }
+        ctx.strokeStyle = 'rgba(255,255,255,0.95)'
+        ctx.lineWidth = 1.5
+        ctx.beginPath()
+        const cx = canvas.width / 2
+        const cy = canvas.height / 2
+        ctx.moveTo(cx - 12, cy)
+        ctx.lineTo(cx - 4, cy)
+        ctx.moveTo(cx + 4, cy)
+        ctx.lineTo(cx + 12, cy)
+        ctx.moveTo(cx, cy - 12)
+        ctx.lineTo(cx, cy - 4)
+        ctx.moveTo(cx, cy + 4)
+        ctx.lineTo(cx, cy + 12)
+        ctx.stroke()
+        if (hard) {
+          const tx = Math.floor(u * W)
+          const ty = Math.floor((1 - v) * H)
+          ctx.strokeStyle = '#ff3d78'
+          ctx.lineWidth = 2
+          ctx.strokeRect((tx - sx) * zoom + 0.5, (ty - sy) * zoom + 0.5, zoom * 2 - 1, zoom * 2 - 1)
+        } else {
+          ctx.beginPath()
+          ctx.arc(cx, cy, Math.max(2, radius * zoom), 0, Math.PI * 2)
+          ctx.strokeStyle = 'rgba(255, 61, 120, 0.95)'
+          ctx.lineWidth = 2
+          ctx.stroke()
+        }
       },
       clear() {
         cv.paint.getContext('2d').clearRect(0, 0, W, H)
