@@ -78,7 +78,7 @@ const Box = ({ p, s, c, r = 0.7, m = 0, ...rest }) => (
 /* Scene                                                               */
 /* ------------------------------------------------------------------ */
 export default function Scene(props) {
-  const { view, boxOpen, shade, brushColor, onBoxClick, onHeadClick, clearKey } = props
+  const { view, boxOpen, shade, brushColor, onBoxClick, onHeadClick, clearKey, playing, onRadioClick } = props
   const { camera, gl, size } = useThree()
 
   const brush = useRef()
@@ -294,6 +294,15 @@ export default function Scene(props) {
       <Room />
       <Mirror />
       <Table />
+      <Radio
+        playing={playing}
+        onClick={(e) => {
+          e.stopPropagation()
+          if (live.current.view === 'table') onRadioClick()
+        }}
+        onOver={pointerCursor(true)}
+        onOut={pointerCursor(false)}
+      />
 
       <MakeupBox
         open={boxOpen}
@@ -660,6 +669,67 @@ function Head({ apiRef, faceRef, onClick, onOver, onOut }) {
         <mesh scale={[rx * 1.04, ry * 1.03, rz * 1.05]} position={[0, 0.01, -0.01]} castShadow>
           <sphereGeometry args={[1, 64, 32, 0, Math.PI * 2, 0, Math.PI * 0.2]} />
           <meshStandardMaterial color="#4a3328" roughness={0.8} side={THREE.DoubleSide} />
+        </mesh>
+      </group>
+    </group>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Little retro radio: click to play / pause song-01                   */
+/* ------------------------------------------------------------------ */
+function Radio({ playing, onClick, onOver, onOut }) {
+  const root = useRef()
+  const grille = useRef()
+  const dial = useRef()
+
+  useFrame((state, dt) => {
+    const t = state.clock.elapsedTime
+    const k = playing ? 1 + Math.abs(Math.sin(t * 7)) * 0.06 : 1
+    grille.current.scale.setScalar(THREE.MathUtils.damp(grille.current.scale.x, k, 25, dt))
+    dial.current.emissiveIntensity = THREE.MathUtils.damp(dial.current.emissiveIntensity, playing ? 1.4 : 0.05, 6, dt)
+    root.current.position.y = playing ? Math.abs(Math.sin(t * 14)) * 0.0025 : 0
+  })
+
+  return (
+    <group position={[0.05, TY, -1.85]} onClick={onClick} onPointerOver={onOver} onPointerOut={onOut}>
+      <group ref={root}>
+        <Box p={[0, 0.15, 0]} s={[0.56, 0.3, 0.2]} c="#f4e6d4" r={0.45} />
+        <Box p={[0, 0.015, 0]} s={[0.58, 0.03, 0.22]} c="#d8b25a" m={0.7} r={0.3} />
+
+        {/* speaker */}
+        <group ref={grille} position={[-0.15, 0.15, 0.102]}>
+          <mesh rotation={[Math.PI / 2, 0, 0]}>
+            <cylinderGeometry args={[0.085, 0.085, 0.01, 32]} />
+            <meshStandardMaterial color="#3a2430" roughness={0.9} />
+          </mesh>
+          <mesh>
+            <torusGeometry args={[0.09, 0.008, 8, 32]} />
+            <meshStandardMaterial color="#d8b25a" metalness={0.8} roughness={0.3} />
+          </mesh>
+        </group>
+
+        {/* tuning dial */}
+        <mesh position={[0.12, 0.19, 0.102]}>
+          <boxGeometry args={[0.2, 0.07, 0.01]} />
+          <meshStandardMaterial ref={dial} color="#f6e7b4" emissive="#ffd98a" emissiveIntensity={0.05} />
+        </mesh>
+        <Box p={[0.1, 0.19, 0.109]} s={[0.004, 0.06, 0.004]} c="#c0394f" />
+        {[0.08, 0.18].map((x) => (
+          <mesh key={x} position={[x, 0.08, 0.11]} rotation={[Math.PI / 2, 0, 0]} castShadow>
+            <cylinderGeometry args={[0.03, 0.03, 0.03, 20]} />
+            <meshStandardMaterial color="#d8b25a" metalness={0.8} roughness={0.3} />
+          </mesh>
+        ))}
+
+        {/* antenna */}
+        <mesh position={[0.304, 0.454, -0.05]} rotation={[0, 0, -0.5]} castShadow>
+          <cylinderGeometry args={[0.004, 0.004, 0.35, 8]} />
+          <meshStandardMaterial color="#d9d9e0" metalness={0.9} roughness={0.25} />
+        </mesh>
+        <mesh position={[0.388, 0.608, -0.05]}>
+          <sphereGeometry args={[0.014, 12, 8]} />
+          <meshStandardMaterial color="#d9d9e0" metalness={0.9} roughness={0.25} />
         </mesh>
       </group>
     </group>

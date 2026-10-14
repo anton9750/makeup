@@ -3,6 +3,7 @@ import { Canvas } from '@react-three/fiber'
 import Scene from './Scene.jsx'
 import { SHADES } from './palette.js'
 import { isMobile, isTouch } from './device.js'
+import { SONG_URL } from './music.js'
 
 const tap = isTouch ? 'tap' : 'click'
 const Tap = isTouch ? 'Tap' : 'Click'
@@ -16,13 +17,43 @@ export default function App() {
   const [toast, setToast] = useState('')
   const [fx, setFx] = useState(0)
   const [clearKey, setClearKey] = useState(0)
+  const [playing, setPlaying] = useState(false)
   const toastTimer = useRef()
+  const audioRef = useRef(null)
 
   const say = useCallback((msg) => {
     setToast(msg)
     clearTimeout(toastTimer.current)
     toastTimer.current = setTimeout(() => setToast(''), 2400)
   }, [])
+
+  useEffect(() => {
+    if (!SONG_URL) return
+    const a = new Audio(SONG_URL)
+    a.loop = true
+    a.preload = 'auto'
+    a.addEventListener('play', () => setPlaying(true))
+    a.addEventListener('pause', () => setPlaying(false))
+    audioRef.current = a
+    return () => {
+      a.pause()
+      audioRef.current = null
+    }
+  }, [])
+
+  const toggleRadio = useCallback(() => {
+    const a = audioRef.current
+    if (!a) {
+      say('Add song-01 to assets/music to hear the radio')
+      return
+    }
+    if (a.paused) {
+      a.play().then(() => say('Radio on')).catch(() => say('Could not play the song'))
+    } else {
+      a.pause()
+      say('Radio off')
+    }
+  }, [say])
 
   const goto = useCallback((v) => {
     setView(v)
@@ -104,6 +135,8 @@ export default function App() {
           onLoadColor={onLoadColor}
           onNeedColor={onNeedColor}
           clearKey={clearKey}
+          playing={playing}
+          onRadioClick={toggleRadio}
         />
       </Canvas>
 
@@ -115,6 +148,9 @@ export default function App() {
       </header>
 
       <div className="hud">
+        <button onClick={toggleRadio} aria-pressed={playing}>
+          {playing ? '♪ Pause radio' : '♪ Radio'}
+        </button>
         {view === 'face' ? (
           <>
             <button onClick={() => setClearKey((k) => k + 1)}>Wipe cheeks</button>
