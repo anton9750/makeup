@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { VIDEO_URL } from './video.js'
 
 /* A stylised "YouTube" (called BlushTube here - rename in LOGO_NAME).
    Flow: power-on flash -> home page -> a ghost cursor clicks video-01 ->
@@ -8,7 +7,7 @@ import { VIDEO_URL } from './video.js'
 const LOGO_NAME = 'BlushTube'
 
 const THUMBS = [
-  { id: 'v0', title: 'coco-jambo', channel: 'You', meta: 'Just now', g: ['#ff7aa2', '#7b4bd6'], hero: true },
+  { id: 'v0', title: 'video-01', channel: 'You', meta: 'Just now', g: ['#ff7aa2', '#7b4bd6'], hero: true },
   { id: 'v1', title: '15 blush shades, ranked by vibes', channel: 'Cheek Lab', meta: '1.2M views', g: ['#ffb184', '#ff6b8b'] },
   { id: 'v2', title: 'I tried every berry tone so you do not have to', channel: 'Berry Club', meta: '340K views', g: ['#c95a78', '#4b2a6b'] },
   { id: 'v3', title: 'Peach vs coral: the final answer', channel: 'Petal Papers', meta: '88K views', g: ['#ffd1a8', '#ff8e7a'] },
@@ -58,41 +57,68 @@ function Thumb({ t, big, thumbRef, pressed, onClick }) {
   )
 }
 
-function Watch({ origin, onBack }) {
-  const vref = useRef(null)
-  const [state, setState] = useState(VIDEO_URL ? 'loading' : 'missing') // loading | playing | tap | ended | missing
+function Watch({ origin, onBack, video }) {
+  const holder = useRef(null)
+  const [state, setState] = useState(video ? 'loading' : 'missing') // loading | playing | tap | ended | missing
   const [muted, setMuted] = useState(false)
 
   const start = useCallback(() => {
-    const v = vref.current
+    const v = video
     if (!v) return
     v.muted = false
     const p = v.play()
     if (!p) return
-    p.then(() => setState('playing')).catch(() => {
+    p.then(() => {
+      setMuted(false)
+      setState('playing')
+    }).catch(() => {
       // browser refused sound -> start muted so it still plays automatically
       v.muted = true
       setMuted(true)
       v.play().then(() => setState('playing')).catch(() => setState('tap'))
     })
-  }, [])
+  }, [video])
 
+  // the <video> element is created (and unlocked) in App during your tap on the laptop,
+  // which is what lets phones autoplay it with sound. Here we just mount it.
   useEffect(() => {
-    if (VIDEO_URL) start()
-  }, [start])
+    const v = video
+    const box = holder.current
+    if (!v || !box) return
+    const onEnded = () => setState('ended')
+    const onPlay = () => setState((s) => (s === 'loading' || s === 'tap' || s === 'ended' ? 'playing' : s))
+    const onError = () => setState('missing')
+    v.addEventListener('ended', onEnded)
+    v.addEventListener('play', onPlay)
+    v.addEventListener('error', onError)
+    box.appendChild(v)
+    v.dataset.live = '1'
+    try {
+      v.currentTime = 0
+    } catch (e) {
+      /* not loaded yet */
+    }
+    start()
+    return () => {
+      v.removeEventListener('ended', onEnded)
+      v.removeEventListener('play', onPlay)
+      v.removeEventListener('error', onError)
+      delete v.dataset.live
+      v.pause()
+      v.remove()
+    }
+  }, [video, start])
 
   const unmute = () => {
-    const v = vref.current
-    if (!v) return
-    v.muted = false
+    if (!video) return
+    video.muted = false
     setMuted(false)
-    if (v.paused) v.play().then(() => setState('playing')).catch(() => {})
+    if (video.paused) video.play().then(() => setState('playing')).catch(() => {})
   }
 
   const replay = () => {
-    const v = vref.current
-    if (!v) return
-    v.currentTime = 0
+    if (!video) return
+    video.currentTime = 0
     start()
   }
 
@@ -100,20 +126,7 @@ function Watch({ origin, onBack }) {
     <div className="bt-watch" style={{ '--ox': origin.x, '--oy': origin.y }}>
       <div className="bt-main">
         <div className="bt-player">
-          {VIDEO_URL ? (
-            <video
-              ref={vref}
-              src={VIDEO_URL}
-              className="bt-video"
-              playsInline
-              autoPlay
-              controls
-              preload="auto"
-              onEnded={() => setState('ended')}
-              onPlay={() => setState((s) => (s === 'ended' ? 'playing' : s === 'loading' ? 'playing' : s))}
-              onError={() => setState('missing')}
-            />
-          ) : null}
+          <div className="bt-videoholder" ref={holder} />
 
           {state === 'missing' && (
             <div className="bt-missing">
@@ -148,7 +161,7 @@ function Watch({ origin, onBack }) {
           )}
         </div>
 
-        <h2 className="bt-title">coco-jambo</h2>
+        <h2 className="bt-title">video-01</h2>
         <div className="bt-row">
           <div className="bt-chan">
             <span className="bt-av big" style={{ background: 'linear-gradient(135deg,#ff7aa2,#7b4bd6)' }} />
@@ -187,7 +200,7 @@ function Watch({ origin, onBack }) {
   )
 }
 
-export default function Tube({ onClose }) {
+export default function Tube({ onClose, video }) {
   const [phase, setPhase] = useState('home') // home | watch
   const [cursor, setCursor] = useState({ x: 88, y: 92, show: false, click: false })
   const [pressed, setPressed] = useState(false)
@@ -246,8 +259,9 @@ export default function Tube({ onClose }) {
           <span>Search</span>
           <span className="bt-glass">⌕</span>
         </div>
-        <button className="bt-back" onClick={onClose}>
-          ← Back to room
+        <button className="bt-back" onClick={onClose} aria-label="Back to room">
+          <span className="bt-back-arrow">←</span>
+          <span className="bt-back-text"> Back to room</span>
         </button>
       </header>
 
@@ -281,12 +295,13 @@ export default function Tube({ onClose }) {
               height="28"
               aria-hidden="true"
             >
+              <circle className="bt-finger" cx="12" cy="12" r="9" />
               <path d="M5 3l14 8-6 1.5L16 20l-3 1.2-3-7.5L5 18z" fill="#fff" stroke="#111" strokeWidth="1.2" strokeLinejoin="round" />
             </svg>
           )}
         </div>
       ) : (
-        <Watch origin={origin} onBack={onClose} />
+        <Watch origin={origin} onBack={onClose} video={video} />
       )}
     </div>
   )

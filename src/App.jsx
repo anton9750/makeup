@@ -5,9 +5,39 @@ import Tube from './Tube.jsx'
 import { SHADES } from './palette.js'
 import { isMobile, isTouch } from './device.js'
 import { SONG_URL } from './music.js'
+import { VIDEO_URL } from './video.js'
 
 const tap = isTouch ? 'tap' : 'click'
 const Tap = isTouch ? 'Tap' : 'Click'
+
+// Creates the video element and "unlocks" it inside the tap that opens the laptop.
+// Phones only allow sound-on playback for media that was started from a real tap,
+// so we start it here, pause it straight away, and the player resumes it later.
+function primeVideo(ref) {
+  if (!VIDEO_URL) return
+  let v = ref.current
+  if (!v) {
+    v = document.createElement('video')
+    v.className = 'bt-video'
+    v.playsInline = true
+    v.setAttribute('playsinline', '')
+    v.setAttribute('webkit-playsinline', '')
+    v.controls = true
+    v.preload = 'auto'
+    v.src = VIDEO_URL
+    ref.current = v
+  }
+  v.muted = false
+  const p = v.play()
+  if (p) {
+    p.then(() => {
+      if (v.dataset.live !== '1') {
+        v.pause()
+        v.currentTime = 0
+      }
+    }).catch(() => {})
+  }
+}
 
 export default function App() {
   const [view, setView] = useState('table') // 'table' | 'face' | 'bed' | 'pc'
@@ -24,6 +54,7 @@ export default function App() {
   const toastTimer = useRef()
   const audioRef = useRef(null)
   const radioWas = useRef(false)
+  const videoEl = useRef(null)
 
   const say = useCallback((msg) => {
     setToast(msg)
@@ -91,7 +122,9 @@ export default function App() {
   }, [goto])
 
   const onLaptopClick = useCallback(() => {
-    if (view === 'bed') goto('pc')
+    if (view !== 'bed') return
+    primeVideo(videoEl)
+    goto('pc')
   }, [view, goto])
 
   const onHeadClick = useCallback(() => {
@@ -158,6 +191,7 @@ export default function App() {
     <div className={`app ${view}`}>
       <Canvas
         shadows
+        frameloop={tube ? 'never' : 'always'}
         dpr={isMobile ? [1, 1.5] : [1, 2]}
         camera={{ fov: 45, near: 0.1, far: 60, position: [0, 3.6, 7.5] }}
         gl={{ antialias: true, powerPreference: 'high-performance' }}
@@ -242,7 +276,7 @@ export default function App() {
         </button>
       )}
 
-      {tube && <Tube onClose={closeTube} />}
+      {tube && <Tube video={videoEl.current} onClose={closeTube} />}
 
       {menuOpen && view === 'table' && (
         <div className="menu-wrap" onPointerDown={(e) => e.stopPropagation()}>

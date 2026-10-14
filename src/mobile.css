@@ -1,0 +1,177 @@
+/* Touch + small-screen polish for the turn arrows, the laptop and BlushTube.
+   Loaded after styles.css (see main.jsx) so these rules win. */
+
+/* ---------- everywhere ---------- */
+.turn-arrow,
+.bt {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+.bt {
+  touch-action: manipulation;
+  overscroll-behavior: contain;
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+.bt-top {
+  padding-top: max(12px, env(safe-area-inset-top));
+}
+.turn-arrow.right {
+  right: max(14px, env(safe-area-inset-right));
+}
+.turn-arrow.left {
+  left: max(14px, env(safe-area-inset-left));
+}
+.bt-videoholder {
+  position: absolute;
+  inset: 0;
+}
+.bt-back-arrow {
+  font-size: 1.1em;
+  line-height: 1;
+}
+.bt-finger {
+  display: none;
+}
+
+/* ---------- fingers instead of a mouse ---------- */
+@media (pointer: coarse) {
+  .turn-arrow {
+    min-width: 60px;
+    min-height: 60px;
+  }
+  .bt button {
+    min-height: 44px;
+  }
+  .bt .bt-unmute,
+  .bt .bt-center-btn {
+    min-height: 48px;
+  }
+  /* the ghost "mouse" becomes a ghost fingertip */
+  .bt-cursor path {
+    display: none;
+  }
+  .bt-finger {
+    display: inline;
+    fill: rgba(255, 255, 255, 0.55);
+    stroke: #fff;
+    stroke-width: 1.5;
+  }
+  .bt-cursor {
+    transform: translate(-50%, -50%);
+  }
+  .bt-cursor.click {
+    animation: fingerTap 0.3s ease-out;
+  }
+  @keyframes fingerTap {
+    50% {
+      transform: translate(-50%, -50%) scale(0.7);
+    }
+  }
+}
+
+/* ---------- phones, portrait ---------- */
+@media (max-width: 640px) {
+  .turn-arrow span {
+    display: none;
+  }
+  .turn-arrow {
+    padding: 12px;
+    border-radius: 50%;
+  }
+
+  .bt-top {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .bt-logo {
+    font-size: 19px;
+  }
+  .bt-back-text {
+    display: none;
+  }
+  .bt .bt-back {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    font-size: 20px;
+  }
+
+  .bt-chips {
+    padding: 10px 12px 2px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .bt-chips::-webkit-scrollbar {
+    display: none;
+  }
+  .bt-grid {
+    grid-template-columns: 1fr;
+    gap: 16px;
+    padding: 10px 12px 28px;
+    overflow-y: auto;
+  }
+  .bt-play {
+    width: 48px;
+  }
+
+  /* watch page: edge-to-edge player, details underneath */
+  .bt-watch {
+    grid-template-columns: 1fr;
+    gap: 14px;
+    padding: 0 0 28px;
+  }
+  .bt-player {
+    border-radius: 0;
+    max-height: none;
+    box-shadow: none;
+  }
+  .bt-main > :not(.bt-player) {
+    margin-left: 14px;
+    margin-right: 14px;
+  }
+  .bt-title {
+    font-size: 18px;
+  }
+}
+
+/* ---------- phones, landscape: give the video the whole height ---------- */
+@media (orientation: landscape) and (max-height: 520px) {
+  .bt-top {
+    padding-top: max(6px, env(safe-area-inset-top));
+    padding-bottom: 6px;
+  }
+  .bt-search,
+  .bt-nav,
+  .bt-side {
+    display: none;
+  }
+  .bt-home {
+    grid-template-columns: 1fr;
+  }
+  .bt-grid {
+    grid-template-columns: repeat(4, 1fr);
+    overflow-y: auto;
+  }
+  .bt-watch {
+    grid-template-columns: 1fr;
+    gap: 12px;
+    padding: 0 0 20px;
+  }
+  .bt-player {
+    width: auto;
+    max-width: 100%;
+    height: calc(100vh - 62px);
+    height: calc(100dvh - 62px);
+    max-height: none;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .bt-main > :not(.bt-player) {
+    margin-left: 18px;
+    margin-right: 18px;
+  }
+}
