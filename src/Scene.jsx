@@ -40,10 +40,34 @@ const FACE_PLANE = new THREE.Plane().setFromNormalAndCoplanarPoint(
   HEAD.clone().addScaledVector(FWD, 0.6),
 )
 
+// laptop lying on the bed (behind the table camera)
+const LAP_POS = new THREE.Vector3(0, 0.695, 7.9)
+const LAP_TILT = 0.22 // lid leans back this many radians
+// centre of the laptop display + the direction it faces (towards the room)
+const SCREEN_C = new THREE.Vector3(0, 0.915, 8.154)
+const SCREEN_N = new THREE.Vector3(0, Math.sin(LAP_TILT), -Math.cos(LAP_TILT)).normalize()
+const SCREEN_W = 0.56
+const SCREEN_H = 0.35
+
 const clamp = THREE.MathUtils.clamp
+const wrapPi = (d) => ((((d + Math.PI) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) - Math.PI
 const easeInOutCubic = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2)
 
 function camTargets(view, aspect) {
+  if (view === 'pc') {
+    const fov = 35
+    const t = 2 * Math.tan(THREE.MathUtils.degToRad(fov / 2))
+    const d = Math.max((SCREEN_H * 1.1) / t, (SCREEN_W * 1.06) / (t * aspect))
+    return { pos: SCREEN_C.clone().addScaledVector(SCREEN_N, d), tgt: SCREEN_C.clone(), fov }
+  }
+  if (view === 'bed') {
+    const fov = aspect < 1.2 ? Math.min(66, 45 + (1.2 - aspect) * 32) : 45
+    const tgt = new THREE.Vector3(0, 0.75, 8.0)
+    const needed = 3.2 / (2 * Math.tan(THREE.MathUtils.degToRad(fov / 2)) * aspect)
+    const dist = Math.max(3.1, needed)
+    const dir = new THREE.Vector3(0, 0.55, -1).normalize()
+    return { pos: tgt.clone().addScaledVector(dir, dist), tgt, fov }
+  }
   if (view === 'face') {
     const k = Math.max(1, 0.9 / aspect)
     return {
@@ -78,7 +102,7 @@ const Box = ({ p, s, c, r = 0.7, m = 0, ...rest }) => (
 /* Scene                                                               */
 /* ------------------------------------------------------------------ */
 export default function Scene(props) {
-  const { view, boxOpen, shade, brushColor, onBoxClick, onHeadClick, clearKey, playing, onRadioClick } = props
+  const { view, boxOpen, shade, brushColor, onBoxClick, onHeadClick, onLaptopClick, clearKey, playing, onRadioClick } = props
   const { camera, gl, size } = useThree()
 
   const brush = useRef()
@@ -90,7 +114,16 @@ export default function Scene(props) {
 
   const cam = useRef({
     t: 1,
+    dur: 1.6,
     par: 0,
+    view: 'table',
+    rot: false,
+    turn: 1,
+    swing: 0,
+    punch: 14,
+    roll: 0.07,
+    fromYaw: 0,
+    fromPitch: 0,
     fromPos: new THREE.Vector3(),
     fromTgt: new THREE.Vector3(0, 0.95, -1.3),
     fromFov: 45,
@@ -112,9 +145,22 @@ export default function Scene(props) {
   // start a camera transition whenever the view changes
   useEffect(() => {
     const c = cam.current
+    const prev = c.view
+    c.view = view
     c.fromPos.copy(camera.position)
     c.fromTgt.copy(c.tgt)
     c.fromFov = camera.fov
+    const dir = camera.getWorldDirection(new THREE.Vector3())
+    c.fromYaw = Math.atan2(-dir.x, -dir.z)
+    c.fromPitch = Math.asin(clamp(dir.y, -1, 1))
+    const bedish = (v) => v === 'bed' || v === 'pc'
+    // anything touching the bed / laptop turns the head (yaw) instead of sliding the look-at point
+    c.rot = bedish(prev) || bedish(view)
+    c.turn = view === 'bed' && prev === 'table' ? 1 : -1
+    c.swing = view === 'pc' ? 1 : prev === 'pc' ? -1 : 0
+    c.dur = view === 'pc' || prev === 'pc' ? 2.1 : c.rot ? 1.9 : 1.6
+    c.punch = view === 'pc' ? -9 : prev === 'pc' ? -6 : 14
+    c.roll = view === 'pc' ? 0.14 : prev === 'pc' ? 0.1 : 0.07
     c.t = 0
     st.current.painting = false
     st.current.last = null
@@ -179,17 +225,42 @@ export default function Scene(props) {
 
     // --- camera: eased move + fov punch + roll = the "cool" zoom ---
     const goal = camTargets(p.view, aspect)
-    c.t = Math.min(1, c.t + dt / 1.6)
+    c.t = Math.min(1, c.t + dt / c.dur)
     const e = easeInOutCubic(c.t)
     const punch = Math.sin(Math.PI * c.t)
     camera.position.lerpVectors(c.fromPos, goal.pos, e)
     c.tgt.lerpVectors(c.fromTgt, goal.tgt, e)
-    c.par = THREE.MathUtils.damp(c.par, p.view === 'table' && c.t >= 1 ? 1 : 0, 3, dt)
-    camera.position.x += ptr.current.x * 0.3 * c.par
+    const still = p.view === 'table' || p.view === 'bed'
+    c.par = THREE.MathUtils.damp(c.par, still && c.t >= 1 ? 1 : 0, 3, dt)
+    camera.position.x += ptr.current.x * (p.view === 'bed' ? 0.22 : 0.3) * c.par
     camera.position.y += ptr.current.y * 0.1 * c.par
-    camera.fov = THREE.MathUtils.lerp(c.fromFov, goal.fov, e) + 14 * punch
-    camera.lookAt(c.tgt)
-    camera.rotateZ(0.07 * punch * (p.view === 'face' ? 1 : -1))
+    if (c.swing) {
+      // curved fly-in towards (or away from) the laptop screen
+      camera.position.x += c.swing * Math.sin(Math.PI * e) * 0.5
+      camera.position.y += Math.sin(Math.PI * e) * 0.12
+    }
+    camera.fov = THREE.MathUtils.lerp(c.fromFov, goal.fov, e) + c.punch * punch
+    const roll = c.roll * punch * (p.view === 'face' || p.view === 'pc' ? 1 : -1)
+    if (c.rot && c.t < 1) {
+      // turn the head: interpolate yaw/pitch so the 180 degree swing goes the right way round
+      const fx = goal.tgt.x - goal.pos.x
+      const fy = goal.tgt.y - goal.pos.y
+      const fz = goal.tgt.z - goal.pos.z
+      const gYaw = Math.atan2(-fx, -fz)
+      const gPitch = Math.asin(clamp(fy / Math.hypot(fx, fy, fz), -1, 1))
+      let dYaw = wrapPi(gYaw - c.fromYaw)
+      if (Math.abs(dYaw) > 2.6) dYaw = c.turn * Math.abs(dYaw)
+      camera.rotation.order = 'YXZ'
+      camera.rotation.set(
+        THREE.MathUtils.lerp(c.fromPitch, gPitch, e),
+        c.fromYaw + dYaw * e,
+        0,
+      )
+      camera.rotateZ(roll)
+    } else {
+      camera.lookAt(c.tgt)
+      camera.rotateZ(roll)
+    }
     camera.updateProjectionMatrix()
     camera.updateMatrixWorld()
 
@@ -294,6 +365,22 @@ export default function Scene(props) {
       <Room />
       <Mirror />
       <Table />
+      <Laptop
+        active={view === 'bed'}
+        onClick={(e) => {
+          e.stopPropagation()
+          if (live.current.view === 'bed') {
+            document.body.style.cursor = ''
+            onLaptopClick()
+          }
+        }}
+        onOver={() => {
+          if (live.current.view === 'bed') document.body.style.cursor = 'pointer'
+        }}
+        onOut={() => {
+          if (live.current.view === 'bed') document.body.style.cursor = ''
+        }}
+      />
       <Radio
         playing={playing}
         onClick={(e) => {
@@ -732,6 +819,151 @@ function Radio({ playing, onClick, onOver, onOut }) {
           <meshStandardMaterial color="#d9d9e0" metalness={0.9} roughness={0.25} />
         </mesh>
       </group>
+    </group>
+  )
+}
+
+/* ------------------------------------------------------------------ */
+/* Laptop on the bed: glowing BlushTube home screen, click to enter    */
+/* ------------------------------------------------------------------ */
+function drawScreen(ctx, w, h) {
+  if (!ctx.roundRect) ctx.roundRect = function (x, y, ww, hh) { this.rect(x, y, ww, hh) } // older browsers
+  const rr = (x, y, ww, hh, r, fill) => {
+    ctx.beginPath()
+    ctx.roundRect(x, y, ww, hh, r)
+    ctx.fillStyle = fill
+    ctx.fill()
+  }
+  ctx.fillStyle = '#17101d'
+  ctx.fillRect(0, 0, w, h)
+  // top bar
+  ctx.fillStyle = '#1f1527'
+  ctx.fillRect(0, 0, w, 78)
+  rr(34, 22, 62, 40, 11, '#ff2e63')
+  ctx.fillStyle = '#fff'
+  ctx.beginPath()
+  ctx.moveTo(56, 31)
+  ctx.lineTo(56, 53)
+  ctx.lineTo(77, 42)
+  ctx.fill()
+  ctx.font = '700 34px system-ui, sans-serif'
+  ctx.fillStyle = '#ffe9f1'
+  ctx.fillText('BlushTube', 110, 55)
+  rr(w / 2 - 190, 18, 380, 44, 22, '#2d2038')
+  ctx.font = '22px system-ui, sans-serif'
+  ctx.fillStyle = '#9c88a8'
+  ctx.fillText('Search', w / 2 - 160, 48)
+  // chips
+  ;['All', 'Makeup', 'Music', 'Live', 'Cosy'].forEach((c, i) => {
+    rr(34 + i * 130, 96, 112, 38, 19, i === 0 ? '#ffe9f1' : '#2d2038')
+    ctx.font = '600 19px system-ui, sans-serif'
+    ctx.fillStyle = i === 0 ? '#2a1a2e' : '#e9d8e4'
+    ctx.fillText(c, 34 + i * 130 + 22, 122)
+  })
+  // thumbnails
+  const g = [
+    ['#ff7aa2', '#7b4bd6'],
+    ['#ffb184', '#ff6b8b'],
+    ['#c95a78', '#4b2a6b'],
+    ['#ffd1a8', '#ff8e7a'],
+    ['#7fb6ff', '#8f6bd8'],
+    ['#d9a6d6', '#6a4b9a'],
+  ]
+  const cw = 300
+  const ch = 168
+  g.forEach((c, i) => {
+    const x = 34 + (i % 3) * (cw + 22)
+    const y = 156 + Math.floor(i / 3) * (ch + 78)
+    const gr = ctx.createLinearGradient(x, y, x + cw, y + ch)
+    gr.addColorStop(0, c[0])
+    gr.addColorStop(1, c[1])
+    rr(x, y, cw, ch, 16, gr)
+    if (i === 0) {
+      ctx.lineWidth = 6
+      ctx.strokeStyle = '#fff'
+      ctx.beginPath()
+      ctx.roundRect(x - 3, y - 3, cw + 6, ch + 6, 18)
+      ctx.stroke()
+    }
+    ctx.fillStyle = 'rgba(255,255,255,0.9)'
+    ctx.beginPath()
+    ctx.moveTo(x + cw / 2 - 16, y + ch / 2 - 22)
+    ctx.lineTo(x + cw / 2 - 16, y + ch / 2 + 22)
+    ctx.lineTo(x + cw / 2 + 24, y + ch / 2)
+    ctx.fill()
+    rr(x, y + ch + 14, cw * 0.8, 14, 7, '#3b2b48')
+    rr(x, y + ch + 38, cw * 0.5, 12, 6, '#2d2038')
+  })
+}
+
+function Laptop({ active, onClick, onOver, onOut }) {
+  const arrow = useRef()
+  const glow = useRef()
+  const W = 1024
+  const H = 640
+
+  const tex = useMemo(() => {
+    const c = document.createElement('canvas')
+    c.width = W
+    c.height = H
+    drawScreen(c.getContext('2d'), W, H)
+    const t = new THREE.CanvasTexture(c)
+    t.colorSpace = THREE.SRGBColorSpace
+    t.anisotropy = 8
+    return t
+  }, [])
+
+  useFrame((state) => {
+    const t = state.clock.elapsedTime
+    if (arrow.current) {
+      arrow.current.visible = active
+      arrow.current.position.y = 0.62 + Math.sin(t * 3) * 0.05
+    }
+    if (glow.current) glow.current.intensity = 2.2 + Math.sin(t * 2) * 0.35
+  })
+
+  const metal = { color: '#cfcfd8', metalness: 0.85, roughness: 0.3 }
+
+  return (
+    <group position={LAP_POS} rotation={[0, Math.PI, 0]} onClick={onClick} onPointerOver={onOver} onPointerOut={onOut}>
+      {/* base + keyboard */}
+      <mesh position={[0, 0.0125, 0]} castShadow receiveShadow>
+        <boxGeometry args={[0.62, 0.025, 0.42]} />
+        <meshStandardMaterial {...metal} />
+      </mesh>
+      <Box p={[0, 0.026, 0.02]} s={[0.54, 0.004, 0.2]} c="#2a2230" r={0.8} />
+      <Box p={[0, 0.026, 0.15]} s={[0.2, 0.004, 0.1]} c="#bdbdc8" m={0.5} r={0.4} />
+
+      {/* lid, hinged along the back edge */}
+      <group position={[0, 0.025, -0.21]} rotation={[-LAP_TILT, 0, 0]}>
+        <mesh position={[0, 0.2, 0]} castShadow>
+          <boxGeometry args={[0.62, 0.4, 0.016]} />
+          <meshStandardMaterial {...metal} />
+        </mesh>
+        <mesh position={[0, 0.2, 0.0092]}>
+          <planeGeometry args={[SCREEN_W, SCREEN_H]} />
+          <meshBasicMaterial map={tex} toneMapped={false} />
+        </mesh>
+        <pointLight ref={glow} position={[0, 0.2, 0.35]} intensity={2.2} color="#ff9fc0" distance={3.2} decay={2} />
+      </group>
+
+      {/* bobbing "click me" arrow, only while you're looking at the bed */}
+      <group ref={arrow} position={[0, 0.62, 0.02]}>
+        <mesh rotation={[Math.PI, 0, 0]}>
+          <coneGeometry args={[0.07, 0.14, 24]} />
+          <meshBasicMaterial color="#ff4f86" toneMapped={false} />
+        </mesh>
+        <mesh position={[0, 0.12, 0]}>
+          <cylinderGeometry args={[0.025, 0.025, 0.12, 16]} />
+          <meshBasicMaterial color="#ff4f86" toneMapped={false} />
+        </mesh>
+      </group>
+
+      {/* generous invisible click area */}
+      <mesh position={[0, 0.22, 0.02]}>
+        <boxGeometry args={[0.8, 0.6, 0.5]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
     </group>
   )
 }
